@@ -1,0 +1,6 @@
+data/*
+!data/download.sh
+code/runs
+*/__pycache__
+logs
+save

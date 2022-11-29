@@ -44,15 +44,12 @@ def train(model, args, log_writer):
 
     for epoch in range(args.epochs):
 
-        if epoch > 2:
-            break
-
         train_loss = 0.0
         train_acc = 0.0
         y = []
         y_hat = []
 
-        logger.info("total steps {}".format(len(train_dataloader)))
+        logger.info("epoch {}, total steps {}".format(epoch, len(train_dataloader)))
 
         for idx, batch in enumerate(train_dataloader):
 
@@ -63,13 +60,18 @@ def train(model, args, log_writer):
             
             model.train()
             out = model(batch_X)
-            y_hat += out.max(1)[1].tolist()
-            train_acc += accuracy_score(batch_y.tolist(), out.max(1)[1].tolist())
             loss = criterion(out, batch_y)
             loss.backward()
 
             optimizer.step()
             optimizer.zero_grad()
+
+            if args.calculate_train_acc:
+                model.eval()
+                with torch.no_grad():
+                    out = model(batch_X)
+                    y_hat += out.max(1)[1].tolist()
+                    train_acc += accuracy_score(batch_y.tolist(), out.max(1)[1].tolist())
 
             train_loss += loss.item()
 
@@ -207,6 +209,7 @@ def get_args():
         help='Model name: EBSNN_LSTM or EBSNN_GRU [default: EBSNN_LSTM]')
     parser.add_argument('--embedding_dim', type=int, default=257,
                         help='embedding dimenstion [default 257]')
+    parser.add_argument("--dropout", default=0.5, type=float)
     
     # training arguments
     parser.add_argument(
@@ -266,6 +269,8 @@ def get_args():
 
     # extra arguments
     parser.add_argument("--do_train", action='store_true')
+    parser.add_argument("--calculate_train_acc", action='store_true', 
+                        help='need to calculate acc in eval mode (slow)')
     parser.add_argument("--do_eval", action='store_true')
 
 
@@ -290,8 +295,9 @@ def main():
     }[args.model]
     log_writer = SummaryWriter()
     model = MODEL_CLASS(args.num_classes, args.embedding_dim, args.device,
+                  bidirectional=not args.no_bidirectional,
                   segment_len=args.segment_len,
-                  bidirectional=not args.no_bidirectional)
+                  dropout_rate=args.dropout)
     model.to(args.device)
     
     if args.do_train:

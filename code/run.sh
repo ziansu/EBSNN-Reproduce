@@ -15,7 +15,8 @@ python run.py \
     --batch_size 256 --gpu 0 --gamma 1 \
     --model EBSNN_LSTM --segment_len 16 \
     --embedding_dim 128 \
+    --dropout 0.5 \
     --no_bidirectional \
     --log_filename ${output_dir}/plog.log \
-    --logging_steps 20 \
+    --logging_steps 50 \
     --shuffle

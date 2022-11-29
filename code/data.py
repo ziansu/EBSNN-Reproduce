@@ -38,7 +38,10 @@ class Dataset(torch.utils.data.Dataset):
             self.label2id = pickle.load(f)
             self.id2label = pickle.load(f)
         
-        self.counter = Counter(self.labels)
+        # for FocalLoss
+        self.alpha = Counter(self.labels)
+        self.alpha = [self.alpha[i] if i in self.alpha else 0 for i in range(args.num_classes)]
+        self.alpha = calculate_alpha(self.alpha, mode='invert')
 
     def __len__(self):
         return len(self.labels)
@@ -59,6 +62,7 @@ if __name__ == '__main__':
         dataset = 'd1'
         max_length = 1500
         segment_len = 8
+        num_classes = 29
 
     args = PseudoArgs()
 

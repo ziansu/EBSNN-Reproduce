@@ -145,7 +145,7 @@ class FocalLoss(nn.Module):
         if alpha is None:
             self.alpha = nn.parameter.Parameter(torch.ones(class_num, 1), requires_grad=False)
         else:
-            self.alpha = alpha
+            self.alpha = nn.parameter.Parameter(alpha, requires_grad=False)
         self.device = device
         self.gamma = gamma
         self.class_num = class_num

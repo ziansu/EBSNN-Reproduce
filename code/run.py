@@ -36,7 +36,7 @@ def train(model, args, log_writer):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     # criterion = nn.CrossEntropyLoss()
     criterion = FocalLoss(
-        args.num_classes, args.device, alpha=args.alpha,
+        args.num_classes, args.device, alpha=train_dataset.alpha,
         gamma=args.gamma, size_average=True)
     criterion.to(args.device)
 
@@ -74,6 +74,7 @@ def train(model, args, log_writer):
             train_loss += loss.item()
 
             if (idx + 1) % args.logging_steps == 0:
+                # FIXME: inaccurate training loss
                 logger.info("step {}, train loss - {}, train acc - {}".format(
                                         idx + 1, 
                                         round(train_loss / (idx + 1), 4),
@@ -126,8 +127,6 @@ def train(model, args, log_writer):
     # log_writer.export_scalars_to_json(os.path.join(args.output_dir, "all_scalars.json"))
     
 
-
-
 def evaluate(model, args, test=False):
 
     # evaluate when training
@@ -138,7 +137,8 @@ def evaluate(model, args, test=False):
                             drop_last=True)
 
 
-    criterion = FocalLoss(args.num_classes, args.device, args.alpha, args.gamma, True)
+    criterion = FocalLoss(args.num_classes, args.device, 
+                            eval_dataset.alpha, args.gamma, True)
     criterion.to(args.device)
 
     total_loss = 0

@@ -180,3 +180,30 @@ class FocalLoss(nn.Module):
         else:
             loss = batch_loss.sum()
         return loss
+
+
+class KDLoss(nn.Module):
+    
+    """
+    Compute the knowledge-distillation (KD) loss given outputs, labels.
+    "Hyperparameters": temperature and alpha
+    NOTE: the KL Divergence for PyTorch comparing the softmaxs of teacher
+    and student expects the input tensor to be log probabilities! See Issue #2
+    """
+    def __init__(self, alpha, temperature, args):
+        self.alpha = alpha
+        self.T = temperature
+        if args.focal:
+            self.supervised_loss = nn.CrossEntropyLoss()
+        else:
+            self.supervised_loss = FocalLoss(args.num_classes, args.device, args.gamma, True)
+
+
+    def forward(self, outputs, labels, teacher_outputs):
+
+        KD_loss = nn.KLDivLoss()(F.log_softmax(outputs/self.T, dim=1),
+                                F.softmax(teacher_outputs/self.T, dim=1)) * \
+                                    (self.alpha * self.T * self.T) + \
+                self.supervised_loss(outputs, labels) * (1. - self.alpha)
+
+        return KD_loss

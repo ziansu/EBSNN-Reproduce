@@ -1,4 +1,6 @@
 import os
+import json
+import random
 import argparse
 from collections import Counter
 import traceback
@@ -10,7 +12,7 @@ from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from math import ceil
 from time import time
 from sklearn.metrics import accuracy_score
-from data import Dataset
+from data import PacketDataset as Dataset
 from utils import p_log, deal_results, set_log_file
 from model import EBSNN_GRU, EBSNN_LSTM, FocalLoss
 from torch.utils.tensorboard import SummaryWriter
@@ -23,6 +25,14 @@ ch.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 ch.setFormatter(formatter)
 logger.addHandler(ch)
+
+
+def set_seed(args):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if args.n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
 
 
 def train(model, args, log_writer):
@@ -127,6 +137,10 @@ def train(model, args, log_writer):
     
     log_writer.add_graph(model, input_to_model=batch_X)
     # log_writer.export_scalars_to_json(os.path.join(args.output_dir, "all_scalars.json"))
+
+    # record hyperparams
+    with open(os.path.join(args.output_dir, 'config.json'), 'w') as f:
+        json.dump(args.__dict__, f)
     
 
 def evaluate(model, args, test=False):
@@ -210,6 +224,7 @@ def get_args():
     parser.add_argument('--embedding_dim', type=int, default=257,
                         help='embedding dimenstion [default 257]')
     parser.add_argument("--dropout", default=0.5, type=float)
+    parser.add_argument("--rnn_dim", default=100, type=int)
     
     # training arguments
     parser.add_argument(
@@ -265,6 +280,7 @@ def get_args():
         default='log_20/log_train.txt',
         help='file name of log'
     )
+    parser.add_argument("--seed", default=42, type=int)
     
 
     # extra arguments
@@ -287,6 +303,9 @@ def main():
     # args.num_classes = len(LABELS)
     args.num_classes = 29   # NOTE: RuntimeError in CUDA is caused by inconsistent classes
     args.alpha = None   # debug
+    args.n_gpu = 1
+
+    set_seed(args)
 
     set_log_file(args.log_filename)
 
@@ -297,7 +316,8 @@ def main():
     model = MODEL_CLASS(args.num_classes, args.embedding_dim, args.device,
                   bidirectional=not args.no_bidirectional,
                   segment_len=args.segment_len,
-                  dropout_rate=args.dropout)
+                  dropout_rate=args.dropout,
+                  rnn_dim=args.rnn_dim)
     model.to(args.device)
     
     if args.do_train:

@@ -2,7 +2,7 @@ import argparse
 import logging
 import traceback
 import os
-import time
+from time import time
 import math
 import random
 import json
@@ -10,9 +10,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 from torch.optim.lr_scheduler import StepLR
-from torch.autograd import Variable
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
 from tqdm import tqdm
 from collections import Counter
@@ -20,7 +18,7 @@ from sklearn.metrics import accuracy_score
 
 from model import EBSNN_GRU, EBSNN_LSTM, FocalLoss, KDLoss
 from data import PacketDataset, FlowDataset
-from utils import RunningAverage, deal_results
+from utils import RunningAverage, deal_results, set_log_file
 
 import logging
 logger = logging.getLogger(__name__)
@@ -32,8 +30,16 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
+def set_seed(args):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if args.n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
+
+
 # Defining train_kd & train_and_evaluate_kd functions
-def train_kd(model, teacher_model, args):
+def train_kd(model, teacher_model, args, use_extra=False):
     """Train the model on `num_steps` batches
     Args:
         model: (torch.nn.Module) the neural network
@@ -48,6 +54,12 @@ def train_kd(model, teacher_model, args):
     dataloader = DataLoader(dataset, batch_size=args.batch_size, 
                             sampler=sampler, num_workers=2, 
                             drop_last=True)
+    if use_extra:
+        extra_dataset = PacketDataset(args, 'train', 'd2')
+        extra_sampler = RandomSampler(extra_dataset)
+        extra_dataloader = DataLoader(extra_dataset, batch_size=args.batch_size,
+                                        sampler=extra_sampler, num_workers=2,
+                                        drop_last=True)
     
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     criterion = KDLoss(args.kd_alpha, args.kd_temperature, args).to(args.device)
@@ -64,9 +76,39 @@ def train_kd(model, teacher_model, args):
         loss_avg = RunningAverage()
         logger.info("epoch {}, total steps {}".format(epoch, len(dataloader)))
 
-        # Use tqdm for progress bar
-        with tqdm(total=len(dataloader)) as t:
-            for i, (train_batch, labels_batch) in enumerate(dataloader):
+        for idx, (train_batch, labels_batch) in enumerate(dataloader):
+
+            train_batch, labels_batch = train_batch.to(args.device), \
+                                        labels_batch.to(args.device)
+
+            # compute model output, fetch teacher output, and compute KD loss
+            output_batch = model(train_batch)
+
+            # get one batch output from teacher_outputs list
+
+            with torch.no_grad():
+                output_teacher_batch = teacher_model(train_batch)
+            # output_teacher_batch = output_teacher_batch.to(args.device)
+
+            loss = criterion(output_batch, labels_batch, output_teacher_batch)
+
+            # clear previous gradients, compute gradients of all variables wrt loss
+            optimizer.zero_grad()
+            loss.backward()
+
+            # performs updates using calculated gradients
+            optimizer.step()
+
+            loss_avg.update(loss.item())
+
+            if (idx + 1) % args.logging_steps == 0:
+                # FIXME: inaccurate training loss
+                logger.info("step {}, train loss - {}".format(
+                                        idx + 1, 
+                                        round(loss_avg() / (idx + 1), 6)))
+        
+        if use_extra:
+            for idx, (train_batch, labels_batch) in enumerate(extra_dataloader):
 
                 train_batch, labels_batch = train_batch.to(args.device), \
                                             labels_batch.to(args.device)
@@ -78,9 +120,9 @@ def train_kd(model, teacher_model, args):
 
                 with torch.no_grad():
                     output_teacher_batch = teacher_model(train_batch)
-                output_teacher_batch = output_teacher_batch.to(args.device)
+                # output_teacher_batch = output_teacher_batch.to(args.device)
 
-                loss = criterion(output_batch, labels_batch, output_teacher_batch)
+                loss = criterion(output_batch, labels_batch, output_teacher_batch, with_supervision=False)
 
                 # clear previous gradients, compute gradients of all variables wrt loss
                 optimizer.zero_grad()
@@ -89,14 +131,17 @@ def train_kd(model, teacher_model, args):
                 # performs updates using calculated gradients
                 optimizer.step()
 
-                loss_avg.update(loss.data[0])
+                loss_avg.update(loss.item())
 
-                t.set_postfix(loss='{:05.3f}'.format(loss_avg()))
-                t.update()
+                if (idx + 1) % args.logging_steps == 0:
+                    # FIXME: inaccurate training loss
+                    logger.info("(extra) step {}, train loss - {}".format(
+                                            idx + 1, 
+                                            round(loss_avg() / (idx + 1), 6)))
 
         eval_loss, eval_acc, eval_results = evaluate_kd(model, args, test=False)
         logger.info("*" * 20 + '\n\teval_loss - {}, eval_acc - {}\n'.format(
-                                        round(eval_loss, 4),
+                                        round(eval_loss, 6),
                                         round(eval_acc, 4)
                                     ))
         
@@ -124,10 +169,10 @@ def train_kd(model, teacher_model, args):
         else:
             pass
         
-        torch.save(model.state_dict(), os.path.join(args.output_dir, 'checkpoint-last.pt'))
-        torch.save(model_best[0], 
-            os.path.join(args.output_dir, 'checkpoint-best-epoch_{}-acc_{:.4f}.pt'.format(
-                                                model_best[2], model_best[1])))
+    torch.save(model.state_dict(), os.path.join(args.output_dir, 'checkpoint-last.pt'))
+    torch.save(model_best[0], 
+        os.path.join(args.output_dir, 'checkpoint-best-epoch_{}-acc_{:.4f}.pt'.format(
+                                            model_best[2], model_best[1])))
 
 
 def evaluate_kd(model, args, test=False):
@@ -199,6 +244,8 @@ def evaluate_kd(model, args, test=False):
     # p_log('DEBUG inference time per batch:',
     #       str(sum(time_logs) / len(time_logs)))
 
+    model.train()
+
     return total_loss, accuracy, [y, y_hat]
 
 
@@ -206,6 +253,7 @@ def get_args():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', default='../data', type=str)
+    parser.add_argument('--output_dir', default='../save', type=str)
     parser.add_argument('--student_config', type=str)
     parser.add_argument('--teacher_config', type=str)
     parser.add_argument('--model_dir', default='experiments/base_model',
@@ -219,6 +267,7 @@ def get_args():
         default='log_20/log_train.txt',
         help='file name of log'
     )
+    parser.add_argument("--seed", default=42, type=int)
     
     # training arguments
     parser.add_argument(
@@ -234,10 +283,9 @@ def get_args():
         help='gamma for focal loss [default 2]')
     parser.add_argument('--test_percent', type=float, default=0.2,
                         help='test percent [default 0.2]')
-    parser.add_argument('--epochs', type=int, default=50,
-                        help='Epochs [default: 50]')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='learning rate [default 0.001]')
+    parser.add_argument("--segment_len", default=16, type=int)
     parser.add_argument("--max_length", default=1500, type=int)
 
     parser.add_argument("--dataset", default='d1', type=str, choices=['d1', 'd2'])
@@ -274,17 +322,42 @@ def get_args():
 
 
 def get_model(config_path, model_dir=None, restore_file=None):
-    "TODO: load model by means of config"
-    # model_type, dim, segment_len, bidirectional,
+    "load model by means of config"
 
     with open(config_path, 'r') as f:
         config = json.load(f)
+        print(config)
+        if "rnn_dim" not in config:
+            config["rnn_dim"] = 100
+        if "num_embeddings" not in config:
+            config["num_embeddings"] = 257
+    
+    MODEL_CLASS = {'EBSNN_LSTM': EBSNN_LSTM, 'EBSNN_GRU': EBSNN_GRU}
+    MODEL = MODEL_CLASS[config["model"]]
+
+    if config["model"].startswith('EBSNN_'):
+        model = MODEL(
+                    num_class=config["num_classes"], 
+                    embedding_dim=config["embedding_dim"], 
+                    device=None,
+                    segment_len=config["segment_len"], 
+                    bidirectional=not config["no_bidirectional"],
+                    dropout_rate=config["dropout"],
+                    rnn_dim=config["rnn_dim"],
+                    num_embeddings=config["num_embeddings"])
+    else:
+        raise NotImplementedError
+
 
     if model_dir:   # teacher model
         assert restore_file
-
+        restore_file = os.path.join(model_dir, restore_file)
+        state_dict = torch.load(restore_file)
+        model.load_state_dict(state_dict, strict=True)  # guarantee safe load
     else:           # student model
         pass
+
+    return model
 
 
 def main():
@@ -292,17 +365,33 @@ def main():
     args = get_args()
     args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     args.num_classes = 29   # d1
+    args.n_gpu = 1
+
+    set_seed(args)
+
+    set_log_file(args.log_filename)
 
     if args.do_train:
 
         student_model = get_model(args.student_config)
+        student_model.to(args.device)
         teacher_model = get_model(args.teacher_config, args.model_dir, args.restore_file)
+        teacher_model.to(args.device)
 
-        train_kd(student_model, teacher_model, args)
+        logger.info("Compression rate: {}".format(
+            sum(p.numel() for p in student_model.parameters() if p.requires_grad) / \
+            sum(p.numel() for p in teacher_model.parameters() if p.requires_grad)
+        ))
+        
+        # adding unlabeled data should follow the original distribution
+        train_kd(student_model, teacher_model, args, use_extra=False)
+        # train_kd(student_model, teacher_model, args, use_extra=True)
     
     if args.do_eval:
 
         model = get_model(args.teacher_config, args.model_dir, args.restore_file)
+        model.to(args.device)
+
         evaluate_kd(model, args, test=True)
 
 

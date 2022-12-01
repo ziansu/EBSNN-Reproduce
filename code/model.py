@@ -7,18 +7,18 @@ from utils import p_log
 class EBSNN_GRU(nn.Module):
     def __init__(self, num_class, embedding_dim, device,
                  segment_len=8, bidirectional=True,
-                 dropout_rate=0.5):
+                 dropout_rate=0.5, rnn_dim=100, num_embeddings=257):
         super(EBSNN_GRU, self).__init__()
         self.num_class = num_class
         self.embedding_dim = embedding_dim
         self.device = device
         self.segment_len = segment_len
-        self.rnn_dim = 100
+        self.rnn_dim = rnn_dim
         # if bi-direction
         self.rnn_directions = 2 if bidirectional else 1
 
         # 256 is 'gg', will be set [0,0..0]
-        self.byte_embed = nn.Embedding(257, self.embedding_dim, padding_idx=256)
+        self.byte_embed = nn.Embedding(num_embeddings, self.embedding_dim, padding_idx=256)
         # to one-hot
         self.byte_embed.requires_grad = True
         self.rnn1 = nn.GRU(input_size=self.embedding_dim,
@@ -49,7 +49,7 @@ class EBSNN_GRU(nn.Module):
         batch_size = x.size(0)
         x = self.byte_embed(x)  # b * l * 8 * 257
 
-        out1, (h_n, c_n) = self.rnn1(x.view(-1, self.segment_len, self.embedding_dim))
+        out1, h_n = self.rnn1(x.view(-1, self.segment_len, self.embedding_dim))
         # bl * 8 * 100
         h = torch.tanh(self.fc1(out1))
         weights = (torch.matmul(h, self.hc1)).view(-1, self.segment_len)
@@ -59,7 +59,7 @@ class EBSNN_GRU(nn.Module):
         out2 = torch.matmul(weights, out1).view(
             batch_size, -1, self.rnn_dim * self.rnn_directions)
 
-        out3, (h1_n, h2_n) = self.rnn2(out2)  # out3: b * l * 200
+        out3, h_n = self.rnn2(out2)  # out3: b * l * 200
         h2 = torch.tanh(self.fc2(out3))
         weights2 = F.softmax((torch.matmul(h2, self.hc2)).view(
             batch_size, -1), dim=1).view(batch_size, 1, -1)
@@ -72,18 +72,20 @@ class EBSNN_GRU(nn.Module):
 
 class EBSNN_LSTM(nn.Module):
     def __init__(self, num_class, embedding_dim, device,
-                 bidirectional=True, segment_len=8, dropout_rate=0.5):
+                 bidirectional=True, segment_len=8, dropout_rate=0.5,
+                 rnn_dim=100, num_embeddings=257):
+        print(num_embeddings)
         super(EBSNN_LSTM, self).__init__()
         self.num_class = num_class
         self.embedding_dim = embedding_dim
         self.device = device
         self.segment_len = segment_len
-        self.rnn_dim = 100
+        self.rnn_dim = rnn_dim
         # if bi-direction
         self.rnn_directions = 2 if bidirectional else 1
 
         # 256 is 'gg', will be set [0,0..0]
-        self.byte_embed = nn.Embedding(257, self.embedding_dim, padding_idx=256)
+        self.byte_embed = nn.Embedding(num_embeddings, self.embedding_dim, padding_idx=256)
         # to one-hot
         self.byte_embed.requires_grad = True
 
@@ -191,6 +193,7 @@ class KDLoss(nn.Module):
     and student expects the input tensor to be log probabilities! See Issue #2
     """
     def __init__(self, alpha, temperature, args):
+        super(KDLoss, self).__init__()
         self.alpha = alpha
         self.T = temperature
         if args.focal:
@@ -199,11 +202,14 @@ class KDLoss(nn.Module):
             self.supervised_loss = FocalLoss(args.num_classes, args.device, args.gamma, True)
 
 
-    def forward(self, outputs, labels, teacher_outputs):
+    def forward(self, outputs, labels, teacher_outputs, with_supervision=True):
 
         KD_loss = nn.KLDivLoss()(F.log_softmax(outputs/self.T, dim=1),
                                 F.softmax(teacher_outputs/self.T, dim=1)) * \
-                                    (self.alpha * self.T * self.T) + \
-                self.supervised_loss(outputs, labels) * (1. - self.alpha)
+                                    (self.alpha * self.T * self.T)
+        if with_supervision:
+            KD_loss += self.supervised_loss(outputs, labels) * (1. - self.alpha)
+        else:
+            pass
 
         return KD_loss

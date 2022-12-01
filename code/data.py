@@ -56,13 +56,16 @@ class Dataset(torch.utils.data.Dataset):
 
 class PacketDataset(torch.utils.data.Dataset):
 
-    def __init__(self, args, file_type):
+    def __init__(self, args, file_type, dataset_name=None):
 
         self.file_type = file_type
         self.max_length = args.max_length
         self.max_length = int(args.max_length / args.segment_len) * args.segment_len  # easy viewing
 
-        data_path = os.path.join(args.data_dir, f'{args.dataset}_{file_type}_dump_packet.pkl')
+        if not dataset_name:
+            dataset_name = args.dataset
+        
+        data_path = os.path.join(args.data_dir, f'{dataset_name}_{file_type}_dump_packet.pkl')
         assert os.path.exists(data_path)
         with open(data_path, 'rb') as f:
             self.features = pickle.load(f)
